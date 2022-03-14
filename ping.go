@@ -627,6 +627,7 @@ func (p *Pinger) processPacket(recv *packet) error {
 	}
 
 	receivedAt := time.Now()
+	startTime := time.Date(receivedAt.Year(), receivedAt.Month(), receivedAt.Day(), 0, 0, 0, 0, receivedAt.Location())
 
 	switch pkt := m.Body.(type) {
 	case *icmp.Echo:
@@ -665,9 +666,11 @@ func (p *Pinger) processPacket(recv *packet) error {
 		// 4字节： origin time
 		// 4字节： receive time
 		// 4字节： transmit time
-		// 注意返回的是UTC时间, 但不影响后续计算
-		transmitstamp := bytesToTimeStamp(pkt.Data[12:16])
-		inPkt.Rtt = time.Now().Sub(transmitstamp)
+		transmitstamp := int64(binary.BigEndian.Uint32(pkt.Data[12:16]))
+		if transmitstamp > 16*1000*3600 {
+			transmitstamp = transmitstamp - 16*1000*3600
+		}
+		inPkt.Rtt = startTime.Add(time.Duration(transmitstamp) * time.Millisecond).Sub(receivedAt)
 		inPkt.Seq = int(binary.BigEndian.Uint16(pkt.Data[2:4]))
 		p.updateStatistics(inPkt)
 	default:
