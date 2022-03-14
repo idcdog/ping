@@ -8,7 +8,7 @@ A simple but powerful ICMP echo (ping) library for Go, inspired by
 Here is a very simple example that sends and receives three packets:
 
 ```go
-pinger, err := ping.NewPinger("www.google.com")
+pinger, err := ping.NewPinger("www.google.com","echo")
 if err != nil {
 	panic(err)
 }
@@ -23,7 +23,7 @@ stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
 Here is an example that emulates the traditional UNIX ping command:
 
 ```go
-pinger, err := ping.NewPinger("www.google.com")
+pinger, err := ping.NewPinger("www.google.com","echo")
 if err != nil {
 	panic(err)
 }
@@ -74,13 +74,13 @@ For a full ping example, see
 ## Installation
 
 ```
-go get -u github.com/go-ping/ping
+go get -u github.com/idcdog/ping
 ```
 
 To install the native Go ping executable:
 
 ```bash
-go get -u github.com/go-ping/ping/...
+go get -u github.com/idcdog/ping/...
 $GOPATH/bin/ping
 ```
 

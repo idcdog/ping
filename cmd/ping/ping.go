@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/go-ping/ping"
+	"github.com/idcdog/ping"
 )
 
 var usage = `
@@ -54,7 +54,7 @@ func main() {
 	}
 
 	host := flag.Arg(0)
-	pinger, err := ping.NewPinger(host)
+	pinger, err := ping.NewPinger(host, "echo")
 	if err != nil {
 		fmt.Println("ERROR:", err)
 		return

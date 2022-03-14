@@ -1,4 +1,4 @@
-module github.com/go-ping/ping
+module github.com/idcdog/ping
 
 go 1.14
 
