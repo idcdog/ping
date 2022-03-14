@@ -1,17 +1,15 @@
 package ping
 
-// +build !linux,!windows
-
 // Returns the length of an ICMP message.
 func (p *Pinger) getMessageLength() int {
 	switch p.PingType {
 	case "echo":
 		// 24+8
-		return p.Size+8
+		return p.Size + 8
 	case "timestamp":
 		return 20
 	default:
-		return p.Size+8
+		return p.Size + 8
 	}
 }
 
