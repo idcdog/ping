@@ -12,7 +12,7 @@ import (
 
 type packetConn interface {
 	Close() error
-	ICMPRequestType() icmp.Type
+	ICMPRequestType(pingType string) icmp.Type
 	ReadFrom(b []byte) (n int, ttl int, src net.Addr, err error)
 	SetFlagTTL() error
 	SetReadDeadline(t time.Time) error
@@ -73,8 +73,15 @@ func (c *icmpv4Conn) ReadFrom(b []byte) (int, int, net.Addr, error) {
 	return n, ttl, src, err
 }
 
-func (c icmpv4Conn) ICMPRequestType() icmp.Type {
-	return ipv4.ICMPTypeEcho
+func (c icmpv4Conn) ICMPRequestType(pingType string) icmp.Type {
+	switch pingType {
+	case "echo":
+		return ipv4.ICMPTypeEcho
+	case "timestamp":
+		return ipv4.ICMPTypeTimestamp
+	default:
+		return ipv4.ICMPTypeEcho
+	}
 }
 
 type icmpV6Conn struct {
@@ -98,6 +105,6 @@ func (c *icmpV6Conn) ReadFrom(b []byte) (int, int, net.Addr, error) {
 	return n, ttl, src, err
 }
 
-func (c icmpV6Conn) ICMPRequestType() icmp.Type {
+func (c icmpV6Conn) ICMPRequestType(pingType string) icmp.Type {
 	return ipv6.ICMPTypeEchoRequest
 }

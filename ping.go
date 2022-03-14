@@ -1,61 +1,15 @@
-// Package ping is a simple but powerful ICMP echo (ping) library.
-//
-// Here is a very simple example that sends and receives three packets:
-//
-//	pinger, err := ping.NewPinger("www.google.com")
-//	if err != nil {
-//		panic(err)
-//	}
-//	pinger.Count = 3
-//	err = pinger.Run() // blocks until finished
-//	if err != nil {
-//		panic(err)
-//	}
-//	stats := pinger.Statistics() // get send/receive/rtt stats
-//
-// Here is an example that emulates the traditional UNIX ping command:
-//
-//	pinger, err := ping.NewPinger("www.google.com")
-//	if err != nil {
-//		panic(err)
-//	}
-//	// Listen for Ctrl-C.
-//	c := make(chan os.Signal, 1)
-//	signal.Notify(c, os.Interrupt)
-//	go func() {
-//		for _ = range c {
-//			pinger.Stop()
-//		}
-//	}()
-//	pinger.OnRecv = func(pkt *ping.Packet) {
-//		fmt.Printf("%d bytes from %s: icmp_seq=%d time=%v\n",
-//			pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt)
-//	}
-//	pinger.OnFinish = func(stats *ping.Statistics) {
-//		fmt.Printf("\n--- %s ping statistics ---\n", stats.Addr)
-//		fmt.Printf("%d packets transmitted, %d packets received, %v%% packet loss\n",
-//			stats.PacketsSent, stats.PacketsRecv, stats.PacketLoss)
-//		fmt.Printf("round-trip min/avg/max/stddev = %v/%v/%v/%v\n",
-//			stats.MinRtt, stats.AvgRtt, stats.MaxRtt, stats.StdDevRtt)
-//	}
-//	fmt.Printf("PING %s (%s):\n", pinger.Addr(), pinger.IPAddr())
-//	err = pinger.Run()
-//	if err != nil {
-//		panic(err)
-//	}
-//
-// It sends ICMP Echo Request packet(s) and waits for an Echo Reply in response.
-// If it receives a response, it calls the OnRecv callback. When it's finished,
-// it calls the OnFinish callback.
-//
-// For a full ping example, see "cmd/ping/ping.go".
-//
 package ping
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
+	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 	"log"
 	"math"
 	"math/rand"
@@ -64,17 +18,12 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"github.com/google/uuid"
-	"golang.org/x/net/icmp"
-	"golang.org/x/net/ipv4"
-	"golang.org/x/net/ipv6"
-	"golang.org/x/sync/errgroup"
 )
 
 const (
 	timeSliceLength  = 8
 	trackerLength    = len(uuid.UUID{})
+	timeStampLength=12
 	protocolICMP     = 1
 	protocolIPv6ICMP = 58
 )
@@ -94,7 +43,6 @@ func New(addr string) *Pinger {
 		Count:      -1,
 		Interval:   time.Second,
 		RecordRtts: true,
-		Size:       timeSliceLength + trackerLength,
 		Timeout:    time.Duration(math.MaxInt64),
 
 		addr:              addr,
@@ -112,8 +60,20 @@ func New(addr string) *Pinger {
 }
 
 // NewPinger returns a new Pinger and resolves the address.
-func NewPinger(addr string) (*Pinger, error) {
+func NewPinger(addr ,pingType string) (*Pinger, error) {
 	p := New(addr)
+	switch pingType {
+	case "echo":
+		// 普通ping
+		p.PingType="echo"
+		p.Size=timeSliceLength + trackerLength
+	case "timestamp":
+		p.PingType="timestamp"
+		p.Size=timeSliceLength+timeStampLength
+	default:
+		p.PingType="echo"
+		p.Size=timeSliceLength + trackerLength
+	}
 	return p, p.Resolve()
 }
 
@@ -201,6 +161,8 @@ type Pinger struct {
 	network string
 	// protocol is "icmp" or "udp".
 	protocol string
+	// pingType is "echo" or "timestamp"
+	PingType string
 
 	logger Logger
 
@@ -212,7 +174,6 @@ type packet struct {
 	nbytes int
 	ttl    int
 }
-
 // Packet represents a received and processed ICMP echo packet.
 type Packet struct {
 	// Rtt is the round-trip time it took to ping.
@@ -404,8 +365,15 @@ func (p *Pinger) ID() int {
 func (p *Pinger) Run() error {
 	var conn packetConn
 	var err error
-	if p.Size < timeSliceLength+trackerLength {
-		return fmt.Errorf("size %d is less than minimum required size %d", p.Size, timeSliceLength+trackerLength)
+	var sizeRatio int
+	if p.PingType=="echo"{
+		sizeRatio=timeSliceLength+trackerLength
+	}
+	if p.PingType=="timestamp"{
+		sizeRatio=timeSliceLength+timeStampLength
+	}
+	if p.Size < sizeRatio {
+		return fmt.Errorf("size %d is less than minimum required size %d", p.Size, sizeRatio)
 	}
 	if p.ipaddr == nil {
 		err = p.Resolve()
@@ -640,12 +608,12 @@ func (p *Pinger) processPacket(recv *packet) error {
 
 	var m *icmp.Message
 	var err error
+
 	if m, err = icmp.ParseMessage(proto, recv.bytes); err != nil {
 		return fmt.Errorf("error parsing icmp message: %w", err)
 	}
-
-	if m.Type != ipv4.ICMPTypeEchoReply && m.Type != ipv6.ICMPTypeEchoReply {
-		// Not an echo reply, ignore it
+	if m.Type != ipv4.ICMPTypeEchoReply && m.Type != ipv6.ICMPTypeEchoReply && m.Type !=ipv4.ICMPTypeTimestampReply {
+		// Not an echo/timestamp reply, ignore it
 		return nil
 	}
 
@@ -687,6 +655,18 @@ func (p *Pinger) processPacket(recv *packet) error {
 		// remove it from the list of sequences we're waiting for so we don't get duplicates.
 		delete(p.awaitingSequences[*pktUUID], pkt.Seq)
 		p.updateStatistics(inPkt)
+	case *icmp.RawBody:
+		// pkt.Data 原始icmp报文去掉2个字节的类型和代码， 去掉2个字节的校验和， 剩余部分16个字节
+		// 2字节： id
+		// 2字节： seq
+		// 4字节： origin time
+		// 4字节： receive time
+		// 4字节： transmit time
+		// 注意返回的是UTC时间, 但不影响后续计算
+		transmitstamp:=bytesToTimeStamp(pkt.Data[12:16])
+		inPkt.Rtt=receivedAt.Sub(transmitstamp)
+		inPkt.Seq=int(binary.BigEndian.Uint16(pkt.Data[2:4]))
+		p.updateStatistics(inPkt)
 	default:
 		// Very bad, not sure how this can happen
 		return fmt.Errorf("invalid ICMP echo reply; type: '%T', '%v'", pkt, pkt)
@@ -700,20 +680,39 @@ func (p *Pinger) processPacket(recv *packet) error {
 	return nil
 }
 
+func IntToBytes(n int64)[]byte{
+	bytebuf:=bytes.NewBuffer([]byte{})
+	binary.Write(bytebuf,binary.BigEndian,n)
+	return bytebuf.Bytes()
+}
+
 func (p *Pinger) sendICMP(conn packetConn) error {
 	var dst net.Addr = p.ipaddr
 	if p.protocol == "udp" {
 		dst = &net.UDPAddr{IP: p.ipaddr.IP, Zone: p.ipaddr.Zone}
 	}
-
-	currentUUID := p.getCurrentTrackerUUID()
-	uuidEncoded, err := currentUUID.MarshalBinary()
-	if err != nil {
-		return fmt.Errorf("unable to marshal UUID binary: %w", err)
+	var t []byte
+	var currentUUID uuid.UUID
+	if p.PingType=="echo"{
+		currentUUID = p.getCurrentTrackerUUID()
+		uuidEncoded, err := currentUUID.MarshalBinary()
+		if err != nil {
+			return fmt.Errorf("unable to marshal UUID binary: %w", err)
+		}
+		t = append(timeToBytes(time.Now()), uuidEncoded...)
+		if remainSize := p.Size - timeSliceLength - trackerLength; remainSize > 0 {
+			t = append(t, bytes.Repeat([]byte{1}, remainSize)...)
+		}
 	}
-	t := append(timeToBytes(time.Now()), uuidEncoded...)
-	if remainSize := p.Size - timeSliceLength - trackerLength; remainSize > 0 {
-		t = append(t, bytes.Repeat([]byte{1}, remainSize)...)
+	if p.PingType=="timestamp"{
+		currentTime:=time.Now()
+		startTime:=time.Date(currentTime.Year(),currentTime.Month(),currentTime.Day(),0,0,0,0,currentTime.Location())
+		dur:=time.Now().UnixMilli()-startTime.UnixMilli()
+		durBytes:=IntToBytes(dur)
+		// IntToBytes拿到的前4个字节是0,需要截掉
+		t=durBytes[4:]
+		// 补充receive timestamp和transmit timestamp， 对于请求包都是0
+		t=append(t, []byte{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}...)
 	}
 
 	body := &icmp.Echo{
@@ -723,7 +722,7 @@ func (p *Pinger) sendICMP(conn packetConn) error {
 	}
 
 	msg := &icmp.Message{
-		Type: conn.ICMPRequestType(),
+		Type: conn.ICMPRequestType(p.PingType),
 		Code: 0,
 		Body: body,
 	}
@@ -753,15 +752,18 @@ func (p *Pinger) sendICMP(conn packetConn) error {
 			}
 			handler(outPkt)
 		}
-		// mark this sequence as in-flight
-		p.awaitingSequences[currentUUID][p.sequence] = struct{}{}
-		p.PacketsSent++
-		p.sequence++
-		if p.sequence > 65535 {
-			newUUID := uuid.New()
-			p.trackerUUIDs = append(p.trackerUUIDs, newUUID)
-			p.awaitingSequences[newUUID] = make(map[int]struct{})
-			p.sequence = 0
+
+		if p.PingType=="echo"{
+			// mark this sequence as in-flight
+			p.awaitingSequences[currentUUID][p.sequence] = struct{}{}
+			p.PacketsSent++
+			p.sequence++
+			if p.sequence > 65535 {
+				newUUID := uuid.New()
+				p.trackerUUIDs = append(p.trackerUUIDs, newUUID)
+				p.awaitingSequences[newUUID] = make(map[int]struct{})
+				p.sequence = 0
+			}
 		}
 		break
 	}
@@ -790,6 +792,16 @@ func (p *Pinger) listen() (packetConn, error) {
 		return nil, err
 	}
 	return conn, nil
+}
+
+func bytesToTimeStamp(b []byte) time.Time {
+	var nsec int64
+	for i := uint8(0); i < 4; i++ {
+		nsec += int64(b[i]) << ((3 - i) * 8)
+	}
+	currentTime := time.Now()
+	startTime := time.Date(currentTime.Year(), currentTime.Month(), currentTime.Day(), 0, 0, 0, 0, time.UTC)
+	return startTime.Add(time.Duration(nsec)*time.Millisecond)
 }
 
 func bytesToTime(b []byte) time.Time {
