@@ -667,8 +667,10 @@ func (p *Pinger) processPacket(recv *packet) error {
 		// 4字节： receive time
 		// 4字节： transmit time
 		transmitstamp := int64(binary.BigEndian.Uint32(pkt.Data[12:16]))
-		if transmitstamp > 16*1000*3600 {
-			transmitstamp = transmitstamp - 16*1000*3600
+		transmitstamp += 8 * 1000 * 3600
+		if transmitstamp > 24*1000*3600 {
+			// 0-8点会超过24h, 需要-24h得到真实时间
+			transmitstamp = transmitstamp - 24*1000*3600
 		}
 		inPkt.Rtt = startTime.Add(time.Duration(transmitstamp) * time.Millisecond).Sub(receivedAt)
 		inPkt.Seq = int(binary.BigEndian.Uint16(pkt.Data[2:4]))
